@@ -1,0 +1,169 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Initialize Ansible Project Structure",
+        "description": "Initialize the Ansible project structure with the directory layout specified in the PRD. This includes creating the `ansible/`, `scripts/`, and `docs/` directories, along with their respective subdirectories and initial files.",
+        "details": "1. Create the base directory structure: `homelab-base/ansible`, `homelab-base/scripts`, `homelab-base/docs`.\n2. Populate `ansible/` with `inventory/`, `playbooks/`, `roles/`, `group_vars/`, and `collections/`.\n3. Create initial files like `site.yaml` in `playbooks/` and example inventory files in `inventory/`.\n4. Populate `scripts/` with `bootstrap.sh` and `validate.sh`.\n5. Create initial documentation files in `docs/`.\n6. Initialize a Git repository in the `homelab-base` directory.\n<info added on 2025-08-07T19:57:10.570Z>\n## Ansible Best Practices for Kubernetes Homelab Deployment (2024)\n\nThis research focuses on modern Ansible best practices applicable to your homelab project, specifically targeting K3s deployment on Raspberry Pi and x86_64 nodes with Tailscale networking. The recommendations are structured around role architecture, inventory management, multi-environment support, and K3s automation patterns.\n\n### 1. Role Structure: Modular and Reusable\n\nA well-defined role structure is crucial for maintainability and reusability. Here's a recommended approach:\n\n*   **Directory Structure:** Adhere to the standard Ansible role directory structure:\n\n    ```\n    roles/\n    └── <role_name>/\n        ├── defaults/\n        │   └── main.yml\n        ├── files/\n        ├── handlers/\n        │   └── main.yml\n        ├── meta/\n        │   └── main.yml\n        ├── tasks/\n        │   └── main.yml\n        ├── templates/\n        ├── vars/\n        │   └── main.yml\n    ```\n\n*   **Role Granularity:** Break down complex tasks into smaller, more manageable roles. For example, instead of a single \"k3s\" role, you have `core/k3s-server-init`, `core/k3s-server-join`, and `core/k3s-agent` as defined in **Task 5**. This promotes reusability and simplifies debugging.\n\n*   **Core vs. Add-on Roles:** Distinguish between core roles (essential for the base system) and add-on roles (optional services). Your project already reflects this with `core/*` and `k3s-addons/*` roles.\n\n*   **Idempotency:** Ensure all roles are idempotent. Use Ansible modules like `apt`, `yum`, `package`, `service`, `copy`, `template`, and `k8s` (from the `kubernetes.core` collection) with appropriate `state` parameters (e.g., `present`, `absent`, `started`, `stopped`). Use `changed_when` and `failed_when` to accurately determine task status.\n\n*   **Example: `core/base` Role (Task 2):**\n\n    ```yaml\n    # roles/core/base/tasks/main.yml\n    ---\n    - name: Create users\n      user:\n        name: \"{{ item.name }}\"\n        state: present\n        groups: \"{{ item.groups | default(omit) }}\"\n        password: \"{{ item.password | default(omit) }}\"\n      loop: \"{{ users }}\"\n\n    - name: Install basic packages\n      package:\n        name: \"{{ item }}\"\n        state: present\n      loop: \"{{ base_packages }}\"\n\n    - name: Set timezone\n      timezone:\n        name: \"{{ timezone }}\"\n    ```\n\n    ```yaml\n    # roles/core/base/defaults/main.yml\n    ---\n    users: []\n    base_packages:\n      - vim\n      - curl\n      - git\n    timezone: \"UTC\"\n    ```\n\n*   **Role Dependencies:** Use the `meta/main.yml` file to declare role dependencies. This ensures roles are executed in the correct order. For example, `core/k3s-agent` depends on `core/docker` and `core/tailscale`.\n\n    ```yaml\n    # roles/core/k3s-agent/meta/main.yml\n    ---\n    dependencies:\n      - role: core/docker\n      - role: core/tailscale\n    ```\n\n### 2. Inventory Management: Dynamic and Templated\n\nEffective inventory management is critical for scaling your homelab.\n\n*   **Dynamic Inventory:** Consider using a dynamic inventory plugin to automatically discover and manage your nodes. Since you're using Tailscale, you could potentially create a custom dynamic inventory script that queries the Tailscale API to get the IP addresses of your nodes. Alternatively, if your nodes have predictable naming schemes, you can use a simple static inventory with templating.\n\n*   **Static Inventory with Templating (Recommended for Simplicity):** Create a `hosts.yml` file and use Jinja2 templating to define groups and variables.\n\n    ```yaml\n    # inventory/hosts.yml\n    all:\n      vars:\n        ansible_user: pi  # Or your default user\n        ansible_become: true # Enable privilege escalation\n        tailscale_auth_key: \"{{ lookup('env', 'TAILSCALE_AUTH_KEY') }}\" # Securely retrieve from environment\n      children:\n        k3s_servers:\n          hosts:\n            k3s-server-01:\n              ansible_host: 100.x.x.x # Tailscale IP\n              k3s_server_type: \"primary\"\n            k3s-server-02:\n              ansible_host: 100.x.x.y # Tailscale IP\n              k3s_server_type: \"secondary\"\n        k3s_agents:\n          hosts:\n            k3s-agent-01:\n              ansible_host: 100.x.x.z # Tailscale IP\n        raspberry_pis:\n          hosts:\n            rpi-01:\n              ansible_host: 100.x.x.w\n    ```\n\n*   **Group Variables:** Use `group_vars/` to define variables specific to groups of hosts. For example, `group_vars/k3s_servers.yml` might contain K3s-specific configuration.\n\n    ```yaml\n    # group_vars/k3s_servers.yml\n    k3s_version: \"v1.28.0+k3s1\"\n    k3s_token: \"supersecretk3stoken\"\n    ```\n\n*   **Host Variables:** Use `host_vars/` to define variables specific to individual hosts. This is useful for overriding group variables or defining unique settings.\n\n*   **Secrets Management:** Never store sensitive information (passwords, API keys) directly in your inventory or roles. Use Ansible Vault, environment variables (as shown in the `hosts.yml` example), or a dedicated secrets management solution like HashiCorp Vault.\n\n### 3. Multi-Environment Support: Variables and Conditional Logic\n\nTo support multiple environments (e.g., development, staging, production), use a combination of variables and conditional logic.\n\n*   **Environment-Specific Variables:** Create separate variable files for each environment. For example:\n\n    ```\n    group_vars/\n    ├── all.yml          # Default variables\n    ├── development.yml  # Development environment overrides\n    ├── staging.yml      # Staging environment overrides\n    └── production.yml   # Production environment overrides\n    ```\n\n*   **`ansible_environment` Variable:** Define an `ansible_environment` variable in your inventory or command-line using `-e`.\n\n*   **Conditional Logic:** Use `when` clauses in your tasks to execute different actions based on the `ansible_environment` variable.\n\n    ```yaml\n    # tasks/main.yml\n    - name: Configure for development environment\n      debug:\n        msg: \"Configuring for development\"\n      when: ansible_environment == \"development\"\n\n    - name: Configure for production environment\n      debug:\n        msg: \"Configuring for production\"\n      when: ansible_environment == \"production\"\n    ```\n\n*   **Example: K3s Version:** You might want to use a different K3s version in your development environment than in production.\n\n    ```yaml\n    # group_vars/all.yml\n    k3s_version: \"v1.27.0+k3s1\" # Default version\n\n    # group_vars/development.yml\n    k3s_version: \"v1.28.0+k3s1\" # Override for development\n    ```\n\n### 4. K3s Automation Patterns: Robust and Scalable\n\nAutomating K3s deployment requires careful consideration of the specific challenges of a lightweight Kubernetes distribution.\n\n*   **K3s Server Initialization (`core/k3s-server-init` - Task 5):**\n\n    *   Download the K3s binary using the `get_url` module.\n    *   Create a systemd service file for K3s.\n    *   Start the K3s service.\n    *   Retrieve the K3s token from `/var/lib/rancher/k3s/server/node-token`.\n    *   Register the token in Ansible's `host_vars` for use by other servers and agents.\n\n    ```yaml\n    # roles/core/k3s-server-init/tasks/main.yml\n    ---\n    - name: Download K3s binary\n      get_url:\n        url: \"https://github.com/k3s-io/k3s/releases/download/{{ k3s_version }}/k3s\"\n        dest: /usr/local/bin/k3s\n        mode: 0755\n      register: k3s_downloaded\n\n    - name: Create K3s systemd service file\n      template:\n        src: k3s.service.j2\n        dest: /etc/systemd/system/k3s.service\n      notify:\n        - Restart K3s\n\n    - name: Enable and start K3s service\n      systemd:\n        name: k3s\n        enabled: true\n        state: started\n\n    - name: Get K3s token\n      slurp:\n        path: /var/lib/rancher/k3s/server/node-token\n      register: k3s_token_file\n      when: k3s_downloaded.changed\n\n    - name: Set K3s token fact\n      set_fact:\n        k3s_token: \"{{ k3s_token_file.content | b64decode | trim }}\"\n      when: k3s_downloaded.changed\n\n    - name: Register K3s token in hostvars\n      set_fact:\n        k3s_server_token: \"{{ k3s_token }}\"\n      delegate_to: localhost\n      run_once: true\n      when: k3s_downloaded.changed\n    ```\n\n    ```yaml\n    # roles/core/k3s-server-init/templates/k3s.service.j2\n    [Unit]\n    Description=Lightweight Kubernetes\n    After=network.target\n\n    [Service]\n    Type=simple\n    ExecStart=/usr/local/bin/k3s server --cluster-init --token={{ k3s_token }}\n    Restart=on-failure\n\n    [Install]\n    WantedBy=multi-user.target\n    ```\n\n*   **K3s Server Join (`core/k3s-server-join` - Task 5):**\n\n    *   Download the K3s binary.\n    *   Create a systemd service file, pointing to the primary server.\n    *   Start the K3s service.\n\n    ```yaml\n    # roles/core/k3s-server-join/tasks/main.yml\n    ---\n    - name: Download K3s binary\n      get_url:\n        url: \"https://github.com/k3s-io/k3s/releases/download/{{ k3s_version }}/k3s\"\n        dest: /usr/local/bin/k3s\n        mode: 0755\n\n    - name: Create K3s systemd service file for joining\n      template:\n        src: k3s-join.service.j2\n        dest: /etc/systemd/system/k3s.service\n      notify:\n        - Restart K3s\n\n    - name: Enable and start K3s service\n      systemd:\n        name: k3s\n        enabled: true\n        state: started\n    ```\n\n    ```yaml\n    # roles/core/k3s-server-join/templates/k3s-join.service.j2\n    [Unit]\n    Description=Lightweight Kubernetes - Join Server\n    After=network.target\n\n    [Service]\n    Type=simple\n    ExecStart=/usr/local/bin/k3s server --server=https://{{ hostvars[groups['k3s_servers'][0]].ansible_host }}:6443 --token={{ hostvars[groups['k3s_servers'][0]].k3s_server_token }}\n    Restart=on-failure\n\n    [Install]\n    WantedBy=multi-user.target\n    ```\n\n*   **K3s Agent (`core/k3s-agent` - Task 5):**\n\n    *   Download the K3s binary.\n    *   Create a systemd service file, pointing to the primary server.\n    *   Start the K3s service.\n\n    ```yaml\n    # roles/core/k3s-agent/tasks/main.yml\n    ---\n    - name: Download K3s binary\n      get_url:\n        url: \"https://github.com/k3s-io/k3s/releases/download/{{ k3s_version }}/k3s\"\n        dest: /usr/local/bin/k3s\n        mode: 0755\n\n    - name: Create K3s agent systemd service file\n      template:\n        src: k3s-agent.service.j2\n        dest: /etc/systemd/system/k3s-agent.service\n      notify:\n        - Restart K3s Agent\n\n    - name: Enable and start K3s agent service\n      systemd:\n        name: k3s-agent\n        enabled: true\n        state: started\n    ```\n\n    ```yaml\n    # roles/core/k3s-agent/templates/k3s-agent.service.j2\n    [Unit]\n    Description=Lightweight Kubernetes - Agent\n    After=network.target\n\n    [Service]\n    Type=simple\n    ExecStart=/usr/local/bin/k3s agent --server=https://{{ hostvars[groups['k3s_servers'][0]].ansible_host }}:6443 --token={{ hostvars[groups['k3s_servers'][0]].k3s_server_token }}\n    Restart=on-failure\n\n    [Install]\n    WantedBy=multi-user.target\n    ```\n\n*   **Kubeconfig Management:** After the cluster is initialized, retrieve the kubeconfig file and distribute it to your local machine or other management nodes. Use the `fetch` module for this.\n\n    ```yaml\n    # tasks/main.yml (in a role applied to the primary server)\n    - name: Fetch kubeconfig file\n      fetch:\n        src: /etc/rancher/k3s/k3s.yaml\n        dest: kubeconfig\n        flat: true\n      delegate_to: \"{{ inventory_hostname }}\"\n      run_once: true\n    ```\n\n*   **Cilium CNI (Task 6):** Consider using the `kubernetes.core` collection to deploy Cilium manifests. Alternatively, use Helm via the `community.kubernetes.helm` collection.\n\n*   **MetalLB (Task 6):** Similar to Cilium, use the `kubernetes.core` or `community.kubernetes.helm` collections to deploy MetalLB. Configure MetalLB's address pool based on your Tailscale subnet.\n\n*   **Longhorn (Task 6):** Use the `kubernetes.core` or `community.kubernetes.helm` collections to deploy Longhorn. Configure Longhorn to use the appropriate storage class.\n\n*   **ArgoCD (Task 8):** Use the `kubernetes.core` or `community.kubernetes.helm` collections to deploy ArgoCD. Configure ArgoCD to manage your applications from Git repositories.\n\n*   **Monitoring and Logging (Task 7):** Use the `kubernetes.core` or `community.kubernetes.helm` collections to deploy Prometheus, Grafana, Loki, and Promtail. Configure Prometheus to scrape metrics from your K3s cluster and applications. Configure Loki and Promtail to collect logs from your K3s cluster.\n\n### 5. Collections\n\nLeverage Ansible Collections for enhanced functionality and maintainability. Here are some recommended collections:\n\n*   `kubernetes.core`: For managing Kubernetes resources.\n*   `community.docker`: For managing Docker containers and images.\n*   `community.general`: For a wide range of general-purpose modules.\n*   `community.kubernetes.helm`: For managing Helm charts.\n\n### 6. Testing\n\n*   **Ansible Lint:** Use `ansible-lint` to check your playbooks and roles for best practices and potential errors.\n*   **Molecule:** Use Molecule for testing your roles in isolated environments (e.g., Docker containers or VMs). This allows you to verify that your roles are working correctly before deploying them to your homelab.\n*   **Idempotency Tests:** Run your playbooks multiple times to ensure that they are idempotent.\n*   **Integration Tests:** After deploying your K3s cluster, run integration tests to verify that the cluster is working correctly. This might include deploying a sample application and verifying that it is accessible.\n\n### 7. Tailscale Integration\n\n*   **Tailscale Authentication:** Use a pre-shared key (PSK) for authenticating with Tailscale. Store the PSK securely using Ansible Vault or environment variables.\n*   **Subnet Routing:** Configure Tailscale subnet routing to allow access to your homelab network from your Tailscale network.\n*   **Magic DNS:** Enable Tailscale Magic DNS for service discovery within your homelab. This allows you to access your services using their Kubernetes service names.\n\n### Applying to Project Tasks\n\n*   **Task 1 (Initialize Ansible Project Structure):** Use the recommended directory structure for roles, inventory, and group\\_vars.\n*   **Task 2 (Develop Core Ansible Base Role):** Follow the role structure guidelines and ensure idempotency.\n*   **Task 3 (Implement Tailscale Ansible Role):** Use a pre-shared key for authentication and configure subnet routing.\n*   **Task 4 (Implement Docker Ansible Role):** Ensure Docker is installed and running correctly.\n*   **Task 5 (Implement K3s Ansible Roles):** Follow the K3s automation patterns described above.\n*   **Tasks 6, 7, 8 (Kubernetes Platform Services, Monitoring and Logging, ArgoCD):** Use the `kubernetes.core` or `community.kubernetes.helm` collections to deploy these services.\n*   **Task 10 (Develop Documentation):** Document the role structure, inventory management, multi-environment support, and K3s automation patterns.\n\nBy following these best practices, you can create a robust, scalable, and maintainable Ansible automation framework for your Kubernetes homelab. Remember to prioritize security, idempotency, and testability throughout the development process.\n</info added on 2025-08-07T19:57:10.570Z>",
+        "testStrategy": "Verify the directory structure and initial files are created correctly. Check that the Git repository is initialized.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 2,
+        "title": "Develop Core Ansible Base Role",
+        "description": "Develop the core Ansible roles for system preparation, including setting up users, SSH keys, and other base configurations. This role will be a foundation for all other roles.",
+        "details": "1. Create `core/base` role.\n2. Implement tasks for:\n    - Setting up users and groups.\n    - Configuring SSH access.\n    - Installing basic system packages.\n    - Setting up timezone.\n3. Ensure the role is idempotent and handles different Linux distributions.",
+        "testStrategy": "Run the role on a test VM and verify that users are created, SSH access is configured, and basic packages are installed. Check for idempotency.",
+        "priority": "high",
+        "dependencies": [
+          1
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "Implement Tailscale Ansible Role",
+        "description": "Implement the Ansible role for setting up Tailscale, including subnet routing. This will enable secure remote access to the homelab network.",
+        "details": "1. Create `core/tailscale` role.\n2. Implement tasks for:\n    - Installing the Tailscale client.\n    - Authenticating with Tailscale using a pre-shared key.\n    - Configuring subnet routing to allow access to the homelab network.\n    - Enabling Magic DNS for service discovery.",
+        "testStrategy": "Run the role on a test VM and verify that Tailscale is installed and authenticated. Check that subnet routing is configured correctly and that Magic DNS is working.",
+        "priority": "high",
+        "dependencies": [
+          1,
+          2
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "Implement Docker Ansible Role",
+        "description": "Create the Ansible role for installing and configuring Docker, the container runtime. This role will be used by K3s.",
+        "details": "1. Create `core/docker` role.\n2. Implement tasks for:\n    - Installing Docker.\n    - Configuring Docker daemon.\n    - Setting up Docker Compose (optional).\n    - Ensuring Docker service is running.",
+        "testStrategy": "Run the role on a test VM and verify that Docker is installed and running. Check that Docker Compose is working (if installed).",
+        "priority": "high",
+        "dependencies": [
+          1,
+          2
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "Implement K3s Ansible Roles",
+        "description": "Develop Ansible roles to initialize and join K3s control plane and worker nodes. This includes roles for server initialization, joining additional control plane nodes, and deploying worker nodes.",
+        "details": "1. Create `core/k3s-server-init`, `core/k3s-server-join`, and `core/k3s-agent` roles.\n2. Implement tasks for:\n    - Downloading and installing K3s.\n    - Configuring K3s server and agent.\n    - Joining nodes to the cluster.\n    - Setting up kubeconfig.",
+        "testStrategy": "Run the roles on multiple VMs to create a K3s cluster. Verify that the control plane is initialized correctly and that worker nodes join the cluster. Check that `kubectl` is working.",
+        "priority": "high",
+        "dependencies": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 6,
+        "title": "Implement Kubernetes Platform Services Roles",
+        "description": "Implement Ansible roles for deploying Cilium CNI, MetalLB load balancer, and Longhorn storage. These roles will configure the core Kubernetes platform services.",
+        "details": "1. Create `k3s-addons/networking/cilium`, `k3s-addons/networking/metallb`, and `k3s-addons/storage/longhorn` roles.\n2. Implement tasks for:\n    - Deploying Cilium CNI.\n    - Configuring MetalLB.\n    - Deploying Longhorn storage.\n    - Setting up storage classes.\n<info added on 2025-08-07T19:57:33.778Z>\nConsider integrating Velero and Restic for backup and disaster recovery. Use Ansible to automate Velero and Restic deployment, configuration, and backup management. Implement a multi-tier storage backup strategy, including local snapshots (Longhorn), offsite backups (Velero + Restic to cloud storage), and archive storage. Ensure compatibility with mixed ARM64/x86_64 infrastructure. Regularly test and validate the backup and disaster recovery strategy. This approach directly supports this task, as well as Tasks 7 and 8, by integrating the backup/restore process into the automated deployment and configuration of the K3s cluster. This information will also be valuable when developing the documentation in Task 10.\n</info added on 2025-08-07T19:57:33.778Z>",
+        "testStrategy": "Run the roles on a K3s cluster and verify that Cilium, MetalLB, and Longhorn are deployed and configured correctly. Check that pods can communicate with each other and that persistent volumes are working.",
+        "priority": "medium",
+        "dependencies": [
+          5
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 7,
+        "title": "Implement Monitoring and Logging Roles",
+        "description": "Develop Ansible roles for deploying Prometheus and Grafana for monitoring, Loki and Promtail for logging, and cert-manager for certificate management.",
+        "details": "1. Create `k3s-addons/observability/prometheus`, `k3s-addons/logging/loki`, and `k3s-addons/certificates` roles.\n2. Implement tasks for:\n    - Deploying Prometheus and Grafana.\n    - Deploying Loki and Promtail.\n    - Deploying cert-manager.\n    - Configuring monitoring and logging.",
+        "testStrategy": "Run the roles on a K3s cluster and verify that Prometheus, Grafana, Loki, Promtail, and cert-manager are deployed and configured correctly. Check that metrics are being collected and that logs are being aggregated.",
+        "priority": "medium",
+        "dependencies": [
+          6
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 8,
+        "title": "Implement ArgoCD Ansible Role",
+        "description": "Implement the Ansible role for deploying ArgoCD for GitOps-based application delivery. This will enable automated deployment of applications from Git repositories.",
+        "details": "1. Create `k3s-addons/gitops/argocd` role.\n2. Implement tasks for:\n    - Deploying ArgoCD.\n    - Configuring ArgoCD.\n    - Setting up GitOps workflows.",
+        "testStrategy": "Run the role on a K3s cluster and verify that ArgoCD is deployed and configured correctly. Check that applications can be deployed from Git repositories.",
+        "priority": "medium",
+        "dependencies": [
+          6
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 9,
+        "title": "Create Bootstrap Script",
+        "description": "Create the `bootstrap.sh` script for one-command deployment. This script will automate the entire cluster deployment process, including backup and disaster recovery.",
+        "status": "pending",
+        "dependencies": [
+          7,
+          8,
+          11
+        ],
+        "priority": "high",
+        "details": "1. Create `scripts/bootstrap.sh`.\n2. Implement logic for:\n    - Downloading and running Ansible.\n    - Configuring Ansible inventory.\n    - Running the main deployment playbook.\n    - Passing in variables such as Tailscale key, cluster name, and domain.\n    - Ensuring the backup and disaster recovery role is included in the deployment.",
+        "testStrategy": "Run the `bootstrap.sh` script on a clean VM and verify that the entire cluster is deployed correctly, including backup and disaster recovery components. Check that all services are running, that applications can be deployed, and that backup/restore procedures are functional.",
+        "subtasks": []
+      },
+      {
+        "id": 10,
+        "title": "Develop Documentation",
+        "description": "Develop comprehensive documentation, including deployment guides, operational procedures, disaster recovery strategies, and troubleshooting guides for the complete homelab solution.",
+        "status": "pending",
+        "dependencies": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          11
+        ],
+        "priority": "medium",
+        "details": "1. Create `docs/deployment`, `docs/operations`, and `docs/troubleshooting` directories.\n2. Write documentation for:\n    - Deploying the cluster.\n    - Scaling the cluster.\n    - Backing up and restoring the cluster.\n    - Disaster recovery strategies.\n    - Troubleshooting common issues.\n    - Operational procedures for the complete homelab solution.",
+        "testStrategy": "Review the documentation for completeness and accuracy. Ensure that the documentation is easy to understand and follow. Verify that backup and restore procedures, disaster recovery strategies, and operational procedures are clearly documented and effective.",
+        "subtasks": []
+      },
+      {
+        "id": 11,
+        "title": "Implement Velero + Restic Backup and Disaster Recovery Ansible Role",
+        "description": "Implement an Ansible role to deploy and configure Velero with Restic for Kubernetes backup and disaster recovery, supporting multi-tier backup strategies and mixed architectures.",
+        "details": "1. Create `k3s-addons/backup/velero` Ansible role.\n2. Implement tasks for:\n    - Deploying Velero to the Kubernetes cluster.\n    - Configuring Velero to use Restic for persistent volume backups.\n    - Setting up multi-tier backup strategies (e.g., Longhorn snapshots, cloud storage like AWS S3 or Backblaze B2, archive storage).\n    - Handling mixed ARM64/x86_64 architecture by using appropriate container images and architecture-specific configurations.\n    - Automating backup scheduling using Velero's CronJob support.\n    - Configuring access to cloud storage providers using appropriate credentials and IAM roles.\n    - Implementing pre- and post-backup hooks for application quiescence and data consistency.\n    - Ensuring backups are encrypted at rest and in transit.\n    - Implementing monitoring and alerting for backup success and failures.\n3. Research current best practices for Velero and Restic configuration, including:\n    - Using Velero's built-in snapshotting capabilities for faster backups and restores.\n    - Configuring Restic to use a dedicated repository for backups.\n    - Implementing a retention policy to manage backup storage costs.\n    - Testing the backup and restore process regularly to ensure it is working correctly.\n4. Consider using Velero plugins for specific storage providers and Kubernetes distributions.\n5. Implement health checks and monitoring for Velero and Restic components.\n6. Document the role usage, configuration options, and troubleshooting steps.",
+        "testStrategy": "1. Deploy the Velero Ansible role on a K3s cluster with Longhorn storage.\n2. Verify that Velero is deployed and configured correctly.\n3. Create a test application with persistent volumes.\n4. Trigger a backup using Velero.\n5. Verify that the backup is created successfully and stored in the configured storage location.\n6. Simulate a disaster by deleting the test application and its persistent volumes.\n7. Restore the application and its data using Velero.\n8. Verify that the application is restored correctly and that the data is intact.\n9. Test the backup and restore process on both ARM64 and x86_64 architectures.\n10. Test the automated backup scheduling by verifying that backups are created at the scheduled intervals.\n11. Monitor Velero and Restic components for any errors or warnings.\n12. Test different backup strategies, such as Longhorn snapshots and cloud storage backups.\n13. Validate the encryption of backups at rest and in transit.",
+        "status": "pending",
+        "dependencies": [
+          5,
+          6
+        ],
+        "priority": "medium",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2025-08-07T19:54:58.201Z",
+      "updated": "2025-08-07T19:57:52.396Z",
+      "description": "Tasks for master context"
+    }
+  }
+}
