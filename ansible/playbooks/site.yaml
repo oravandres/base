@@ -1,0 +1,8 @@
+---
+- name: Homelab base - site orchestration
+  hosts: all
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    ansible_become: true
+  roles: []
