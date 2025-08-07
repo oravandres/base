@@ -1,0 +1,9 @@
+---
+- name: Converge
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Placeholder converge validation
+      debug:
+        msg: "Molecule converge reached"

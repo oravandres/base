@@ -1,0 +1,19 @@
+---
+driver:
+  name: docker
+platforms:
+  - name: instance-ubuntu-22.04
+    image: geerlingguy/docker-ubuntu2204-ansible:latest
+    privileged: true
+    pre_build_image: true
+provisioner:
+  name: ansible
+  playbooks:
+    converge: converge.yml
+lint: |
+  yamllint -s .
+  ansible-lint -p
+verifier:
+  name: ansible
+  options:
+    vvv: false

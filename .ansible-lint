@@ -1,0 +1,7 @@
+rulesdir: []
+skip_list:
+  - experimental
+  - yaml
+parseable: true
+quiet: false
+verbosity: 0
